@@ -1,71 +1,59 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
 
-st.set_page_config(layout="wide")
-st.title("Nassau Candy - Route Efficiency Dashboard")
+st.set_page_config(page_title="Nassau Candy Dashboard", layout="wide")
+st.title("🍫 Nassau Candy - Route & Profit Efficiency Dashboard")
+st.caption("Dataset: 4130 cleaned records | Auto-loaded from GitHub")
 
-# Factory Coordinates from brief
-factory_coords = {
-    "Lot's O' Nuts": [32.881893, -111.768036],
-    "Wicked Choccy's": [32.076176, -81.088371],
-    "Sugar Shack": [48.11914, -96.18115],
-    "Secret Factory": [41.446333, -90.565487],
-    "The Other Factory": [35.1175, -89.971107]
-}
+# Load data automatically
+@st.cache_data
+def load_data():
+    return pd.read_csv("Nassau_Candy_Clean_4130.csv")
 
-file = st.file_uploader("Upload your clean CSV file here", type="csv")
+df = load_data()
 
-if file:
-    df = pd.read_csv(file)
-    if 'Lead_Time_Days' not in df.columns:
-        df['Lead_Time_Days'] = (pd.to_datetime(df['Ship Date']) - pd.to_datetime(df['Order Date'])).dt.days
-    if 'Route' not in df.columns and 'Factory' in df.columns:
-        df['Route'] = df['Factory'].astype(str) + " -> " + df['State/Province'].astype(str)
+# Convert dates
+df['Order Date'] = pd.to_datetime(df['Order Date'])
+df['Ship Date'] = pd.to_datetime(df['Ship Date'])
 
-    st.success(f"Loaded {len(df)} rows!")
+# Sidebar filters
+st.sidebar.header("Filters")
+division = st.sidebar.multiselect("Division", df['Division'].unique(), default=df['Division'].unique())
+region = st.sidebar.multiselect("Region", df['Region'].unique(), default=df['Region'].unique())
 
-    # --- OUTLIER FIX ---
-    st.write(f"Original Avg: {df['Lead_Time_Days'].mean():.1f} days")
-    df_clean = df[(df['Lead_Time_Days'] >= 10) & (df['Lead_Time_Days'] <= 180)].copy()
-    df_clean['Is_Delayed'] = df_clean['Lead_Time_Days'] > 120
-    st.write(f"After 10-180 day filter: {len(df_clean)} rows, Avg {df_clean['Lead_Time_Days'].mean():.1f} days | Removed {len(df)-len(df_clean)} outliers")
+filtered = df[(df['Division'].isin(division)) & (df['Region'].isin(region))]
 
-    # --- FILTERS (Required) ---
-    st.sidebar.header("Filters")
-    region_sel = st.sidebar.multiselect("Region", df_clean['Region'].unique())
-    state_sel = st.sidebar.multiselect("State/Province", df_clean['State/Province'].unique() if 'State/Province' in df_clean.columns else [])
-    shipmode_sel = st.sidebar.multiselect("Ship Mode", df_clean['Ship Mode'].unique())
-    threshold = st.sidebar.slider("Lead-time threshold", 10, 180, 120)
+# KPIs
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Total Orders", len(filtered))
+c2.metric("Total Sales", f"${filtered['Sales'].sum():,.2f}")
+c3.metric("Total Profit", f"${filtered['Gross Profit'].sum():,.2f}")
+c4.metric("Avg Lead Time", f"{filtered['Lead_Time_Days'].mean():.1f} days")
 
-    filtered = df_clean.copy()
-    if region_sel:
-        filtered = filtered[filtered['Region'].isin(region_sel)]
-    if state_sel and 'State/Province' in filtered.columns:
-        filtered = filtered[filtered['State/Province'].isin(state_sel)]
-    if shipmode_sel:
-        filtered = filtered[filtered['Ship Mode'].isin(shipmode_sel)]
-    filtered = filtered[filtered['Lead_Time_Days'] <= threshold]
+st.divider()
 
-    # --- KPIs ---
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Avg Lead Time", f"{filtered['Lead_Time_Days'].mean():.1f} days")
-    c2.metric("Total Shipments", f"{len(filtered)}")
-    c3.metric("Factories", f"{filtered['Factory'].nunique() if 'Factory' in filtered.columns else 5}")
-    c4.metric("Delay %", f"{filtered['Is_Delayed'].mean()*100:.1f}%")
+# Charts
+col1, col2 = st.columns(2)
+with col1:
+    fig1 = px.bar(filtered.groupby('Division')['Sales'].sum().reset_index(), 
+                  x='Division', y='Sales', title="Sales by Division", color='Division')
+    st.plotly_chart(fig1, use_container_width=True)
 
-    # --- Ship Mode Comparison ---
-    st.subheader("Ship Mode Performance")
-    if 'Ship Mode' in filtered.columns:
-        st.bar_chart(filtered.groupby('Ship Mode')['Lead_Time_Days'].mean())
+with col2:
+    fig2 = px.bar(filtered.groupby('Factory')['Gross Profit'].sum().reset_index().sort_values('Gross Profit', ascending=False),
+                  x='Factory', y='Gross Profit', title="Profit by Factory")
+    st.plotly_chart(fig2, use_container_width=True)
 
-    # --- Geographic Map ---
-    st.subheader("Factory Locations (Geographic Bottleneck)")
-    map_df = pd.DataFrame([{"Factory": k, "lat": v[0], "lon": v[1]} for k, v in factory_coords.items()])
-    st.map(map_df)
+col3, col4 = st.columns(2)
+with col3:
+    fig3 = px.scatter(filtered, x='Lead_Time_Days', y='Gross Profit', color='Ship Mode',
+                      title="Lead Time vs Profit", hover_data=['Product Name'])
+    st.plotly_chart(fig3, use_container_width=True)
 
-    # --- Route Drill-Down ---
-    route_stats = filtered.groupby('Route')['Lead_Time_Days'].agg(['mean','count']).reset_index().rename(columns={'mean':'Avg_Days','count':'Volume'})
-    st.subheader("Top 10 Fastest Routes")
-    st.dataframe(route_stats.nsmallest(10, 'Avg_Days'))
-    st.subheader("Bottom 10 Slowest Routes")
-    st.dataframe(route_stats.nlargest(10, 'Avg_Days'))
+with col4:
+    fig4 = px.pie(filtered, names='Region', values='Sales', title="Sales by Region")
+    st.plotly_chart(fig4, use_container_width=True)
+
+st.subheader("Data Preview")
+st.dataframe(filtered.head(100), use_container_width=True)
